@@ -1,16 +1,15 @@
 # Multi-Proxyv6
 
-Redirect connections from different ports at one ipv4 address to unique random ipv6 address from \64 subnetwork. Based on 3proxy
+Chuyển kết nối từ các cổng khác nhau tại một địa chỉ IPv4 đến địa chỉ IPv6 duy nhất và ngẫu nhiên từ mạng con \64. Dựa trên 3proxy
 
-# Requirements
-Centos 7
-Ipv6 \64
-# Installation
-[Video tutorial](https://www.youtube.com/watch?v=F6hhNfFKQEk, used as Centos setup
+# Yêu cầu
+CentOS 7
+IPv6 \64
 
+# Cài đặt
 bash <(curl -s "https://raw.githubusercontent.com/quayvlog/proxyv6/main/install.sh")
 
-After installation dowload the file proxy.zip
+Sau khi cài đặt, tải tệp proxy.zip
 
-File structure: IP4:PORT:LOGIN:PASS
-You can use this online util to change proxy format as you like
+Cấu trúc tệp: IP4:PORT:LOGIN:PASS
+Bạn có thể sử dụng công cụ trực tuyến này để thay đổi định dạng proxy theo ý muốn.
