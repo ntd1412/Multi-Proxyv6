@@ -1,6 +1,6 @@
 # Multi-Proxyv6
 
-Chuyển kết nối từ các cổng khác nhau tại một địa chỉ IPv4 đến địa chỉ IPv6 duy nhất và ngẫu nhiên từ mạng con \64. Dựa trên 3proxy
+Tạo proxyv6 từ VPS dựa theo 3proxy
 
 # Yêu cầu
 CentOS 7
