@@ -7,7 +7,7 @@ CentOS 7
 IPv6 \64
 
 # Cài đặt
-bash <(curl -s "https://raw.githubusercontent.com/quayvlog/proxyv6/main/install.sh")
+bash <(curl -s "https://raw.githubusercontent.com/ntd1412/Multi-Proxyv6/main/install.sh")
 
 Sau khi cài đặt, tải tệp proxy.zip
 
