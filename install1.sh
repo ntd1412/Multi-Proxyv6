@@ -1,148 +1,89 @@
 #!/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+# Auto setup 3proxy with IPv6 local fake (NAT v6 -> v4)
+# Author: ChatGPT mod
 
-random() {
-	tr </dev/urandom -dc A-Za-z0-9 | head -c12
-	echo
-}
-
-array=(1 2 3 4 5 6 7 8 9 0 a b c d e f)
-gen64() {
-	ip64() {
-		echo "${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}"
-	}
-	echo "$1:$(ip64):$(ip64):$(ip64):$(ip64)"
-}
-
-install_3proxy() {
-    echo "installing 3proxy"
-    URL="https://github.com/z3APA3A/3proxy/archive/3proxy-0.8.6.tar.gz"
-    wget -qO- $URL | bsdtar -xvf-
-    cd 3proxy-3proxy-0.8.6
-    make -f Makefile.Linux
-    mkdir -p /usr/local/etc/3proxy/{bin,logs,stat}
-    cp src/3proxy /usr/local/etc/3proxy/bin/
-    cd $WORKDIR
-}
-
-gen_3proxy() {
-    cat <<EOF
-daemon
-maxconn 2000
-nserver 1.1.1.1
-nserver 8.8.8.8
-nserver 2001:4860:4860::8888
-nserver 2001:4860:4860::8844
-nscache 65536
-timeouts 1 5 30 60 180 1800 15 60
-setgid 65535
-setuid 65535
-stacksize 6291456 
-flush
-auth strong
-
-users $(awk -F "/" 'BEGIN{ORS="";} {print $1 ":CL:" $2 " "}' ${WORKDATA})
-
-$(awk -F "/" '{print "auth strong\nallow " $1 "\nproxy -6 -n -a -p" $4 " -i" $3 " -e"$5"\nflush\n"}' ${WORKDATA})
-EOF
-}
-
-gen_proxy_file_for_user() {
-    cat >proxy.txt <<EOF
-$(awk -F "/" '{print $3 ":" $4 ":" $1 ":" $2 }' ${WORKDATA})
-EOF
-}
-
-gen_data() {
-    seq $FIRST_PORT $LAST_PORT | while read port; do
-        echo "user$port/$(random)/$IP4/$port/$(gen64 $IP6)"
-    done
-}
-
-gen_iptables() {
-    awk -F "/" '{print "iptables -I INPUT -p tcp --dport " $4 "  -j ACCEPT"}' ${WORKDATA}
-}
-
-gen_ifconfig() {
-    awk -F "/" '{print "ifconfig eth0 inet6 add " $5 "/64"}' ${WORKDATA}
-}
-
-# --- Main ---
-echo "installing apps"
-yum -y install wget gcc net-tools bsdtar zip >/dev/null
+echo "=== Installing 3proxy & dependencies ==="
+apt update -y || yum update -y
+apt install gcc make git curl net-tools wget unzip -y 2>/dev/null || yum install gcc make git curl net-tools wget unzip -y -q
 
 WORKDIR="/home/cloudfly"
-WORKDATA="${WORKDIR}/data.txt"
 mkdir -p $WORKDIR && cd $WORKDIR
 
-install_3proxy
+echo "=== Downloading 3proxy ==="
+rm -rf 3proxy
+git clone https://github.com/z3APA3A/3proxy.git
+cd 3proxy
+make -f Makefile.Linux
 
-IP4=$(curl -4 -s icanhazip.com)
-IP6=$(curl -6 -s icanhazip.com | cut -f1-4 -d':')
-echo "IPv4=$IP4 IPv6 Subnet=$IP6"
+mkdir -p /usr/local/etc/3proxy/bin
+cp src/3proxy /usr/local/etc/3proxy/bin/
+cd /usr/local/etc/3proxy
 
-FIRST_PORT=21000
-LAST_PORT=$(($FIRST_PORT + 50))
+# Generate config folder
+mkdir -p /usr/local/etc/3proxy/{logs,conf,bin,stat}
 
-gen_data >$WORKDATA
-gen_3proxy >/usr/local/etc/3proxy/3proxy.cfg
-gen_iptables >$WORKDIR/boot_iptables.sh
-gen_ifconfig >$WORKDIR/boot_ifconfig.sh
-chmod +x boot_*.sh
+echo "=== Configuring IPv6 NAT ==="
+sysctl -w net.ipv6.conf.all.disable_ipv6=0
+sysctl -w net.ipv6.conf.default.disable_ipv6=0
+sysctl -w net.ipv6.conf.all.forwarding=1
+sysctl -p
 
-bash $WORKDIR/boot_iptables.sh
-bash $WORKDIR/boot_ifconfig.sh
+# Create fake IPv6 network
+ip -6 addr add fd00::1/64 dev eth0
 
-ulimit -n 1000048
-/usr/local/etc/3proxy/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg &
+# Generate proxy config
+BASE_PORT=10000
+USER="user"
+PASS="pass"
+COUNT=5  # số lượng proxy muốn tạo
 
-gen_proxy_file_for_user
+echo "=== Generating proxy list ($COUNT proxies) ==="
+> /usr/local/etc/3proxy/conf/3proxy.cfg
+for i in $(seq 1 $COUNT); do
+  IPV6="fd00::$i"
+  PORT=$((BASE_PORT + i))
+  echo "proxy -6 -n -a -p$PORT -i$(hostname -I | awk '{print $1}') -e$IPV6" >> /usr/local/etc/3proxy/conf/3proxy.cfg
+done
 
-echo "✅ Proxy created!"
-cat proxy.txt
+cat <<EOF >> /usr/local/etc/3proxy/conf/3proxy.cfg
+auth strong
+users $USER:CL:$PASS
+allow $USER
+maxconn 200
+flush
+setgid 65535
+setuid 65535
+nserver 1.1.1.1
+nserver 8.8.8.8
+log /usr/local/etc/3proxy/logs/3proxy.log D
+logformat "L%t %E %U %C:%c %R:%r %O %I %h %T"
+rotate 30
+EOF
 
-# ==========================
-# 🔁 AUTO IPV6 ROTATION (FIXED)
-# ==========================
-cat <<'AUTOSCRIPT' >/root/auto_rotate_ipv6.sh
-#!/bin/bash
-WORKDIR="/home/cloudfly"
-WORKDATA="${WORKDIR}/data.txt"
-CONFIG="/usr/local/etc/3proxy/3proxy.cfg"
-IFACE="eth0"
+# Create systemd service
+cat <<EOF >/etc/systemd/system/3proxy.service
+[Unit]
+Description=3proxy proxy server
+After=network.target
 
-array=(1 2 3 4 5 6 7 8 9 0 a b c d e f)
-gen64() {
-    ip64() {
-        echo "${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}"
-    }
-    echo "$1:$(ip64):$(ip64):$(ip64):$(ip64)"
-}
+[Service]
+Type=simple
+ExecStart=/usr/local/etc/3proxy/bin/3proxy /usr/local/etc/3proxy/conf/3proxy.cfg
+Restart=always
 
-# Bật IPv6 forwarding mỗi lần chạy
-sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null
+[Install]
+WantedBy=multi-user.target
+EOF
 
-IP4=$(curl -4 -s icanhazip.com)
-IP6=$(curl -6 -s icanhazip.com | cut -f1-4 -d':')
+systemctl daemon-reload
+systemctl enable 3proxy
+systemctl restart 3proxy
 
-# Sinh lại file data mới
-> $WORKDATA
-seq 21000 21050 | while read port; do
-    echo "user$port/$(tr </dev/urandom -dc A-Za-z0-9 | head -c12)/$IP4/$port/$(gen64 $IP6)"
-done >> $WORKDATA
+echo "=== Proxy installed successfully ==="
+echo "Your proxy list:"
+for i in $(seq 1 $COUNT); do
+  PORT=$((BASE_PORT + i))
+  echo "http://$USER:$PASS@$(hostname -I | awk '{print $1}'):$PORT"
+done
 
-# Gán IPv6 mới cho interface
-awk -F "/" -v iface="$IFACE" '{print "ifconfig "iface" inet6 add " $5 "/64"}' $WORKDATA > /home/cloudfly/boot_ifconfig.sh
-bash /home/cloudfly/boot_ifconfig.sh
-
-# Restart 3proxy
-pkill 3proxy
-sleep 2
-/usr/local/etc/3proxy/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg &>/dev/null &
-
-echo "$(date) -> IPv6 rotated successfully" >> /var/log/ipv6-rotate.log
-AUTOSCRIPT
-
-chmod +x /root/auto_rotate_ipv6.sh
-(crontab -l 2>/dev/null; echo "*/1 * * * * bash /root/auto_rotate_ipv6.sh >/dev/null 2>&1") | crontab -
-echo "✅ IPv6 auto-rotation enabled (every 1 minute)"
+echo "=== Done ==="
