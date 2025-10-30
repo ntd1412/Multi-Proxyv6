@@ -27,6 +27,7 @@ DATA_FILE="$WORKDIR/data.txt"
 PROXY_CFG="/usr/local/etc/3proxy/3proxy.cfg"
 
 ARRAY=(1 2 3 4 5 6 7 8 9 0 a b c d e f)
+IP4=$(curl -4 -s icanhazip.com)
 
 # -------------------------------
 # Hàm sinh IPv6 ngẫu nhiên
@@ -63,7 +64,7 @@ setuid 65535
 flush
 auth none
 
-$(awk -F "/" '{print "proxy -6 -n -a -p"$1" -i"$2" -e"$2}' $DATA_FILE)
+$(awk -F "/" -v ip4=$IP4 '{print "proxy -6 -n -a -p"$1" -i"ip4" -e"$2}' $DATA_FILE)
 EOF
 }
 
@@ -102,9 +103,9 @@ bash $BOOT_IPTABLES
 ulimit -n 1000048
 /usr/local/etc/3proxy/bin/3proxy $PROXY_CFG &
 
-# Xuất danh sách proxy IPv6
-awk -F "/" '{print "["$2"]:"$1}' $DATA_FILE > $WORKDIR/proxy.txt
-echo "✅ 2000 IPv6 proxies created!"
+# Xuất danh sách proxy IPv4:PORT
+awk -F "/" -v ip=$IP4 '{print ip ":" $1}' $DATA_FILE > $WORKDIR/proxy.txt
+echo "✅ 2000 IPv4:PORT proxies created!"
 cat $WORKDIR/proxy.txt
 
 # -------------------------------
@@ -119,6 +120,7 @@ FIRST_PORT=21000
 LAST_PORT=22999
 
 ARRAY=(1 2 3 4 5 6 7 8 9 0 a b c d e f)
+IP4=$(curl -4 -s icanhazip.com)
 
 gen64() {
     ip64() {
@@ -151,8 +153,8 @@ done
 # Reload 3proxy config mà không kill process
 kill -HUP $(pidof 3proxy)
 
-# Cập nhật proxy.txt
-awk -F "/" '{print "["$2"]:"$1}' $DATA_FILE > $WORKDIR/proxy.txt
+# Cập nhật proxy.txt với IP4:PORT
+awk -F "/" -v ip=$IP4 '{print ip ":" $1}' $DATA_FILE > $WORKDIR/proxy.txt
 echo "$(date) -> IPv6 rotated without restarting 3proxy" >> /var/log/ipv6-rotate.log
 EOF
 chmod +x $ROTATE_SCRIPT
