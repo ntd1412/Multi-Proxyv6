@@ -102,13 +102,14 @@ echo "✅ Proxy created!"
 cat proxy.txt
 
 # ==========================
-# 🔁 AUTO IPV6 ROTATION
+# 🔁 AUTO IPV6 ROTATION (FIXED)
 # ==========================
 cat <<'AUTOSCRIPT' >/root/auto_rotate_ipv6.sh
 #!/bin/bash
 WORKDIR="/home/cloudfly"
 WORKDATA="${WORKDIR}/data.txt"
 CONFIG="/usr/local/etc/3proxy/3proxy.cfg"
+IFACE="eth0"
 
 array=(1 2 3 4 5 6 7 8 9 0 a b c d e f)
 gen64() {
@@ -118,15 +119,28 @@ gen64() {
     echo "$1:$(ip64):$(ip64):$(ip64):$(ip64)"
 }
 
+# Bật IPv6 forwarding mỗi lần chạy
+sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null
+
+IP4=$(curl -4 -s icanhazip.com)
 IP6=$(curl -6 -s icanhazip.com | cut -f1-4 -d':')
+
+# Sinh lại file data mới
 > $WORKDATA
 seq 21000 21050 | while read port; do
-    echo "user$port/$(tr </dev/urandom -dc A-Za-z0-9 | head -c12)/$(curl -4 -s icanhazip.com)/$port/$(gen64 $IP6)"
+    echo "user$port/$(tr </dev/urandom -dc A-Za-z0-9 | head -c12)/$IP4/$port/$(gen64 $IP6)"
 done >> $WORKDATA
 
+# Gán IPv6 mới cho interface
+awk -F "/" -v iface="$IFACE" '{print "ifconfig "iface" inet6 add " $5 "/64"}' $WORKDATA > /home/cloudfly/boot_ifconfig.sh
 bash /home/cloudfly/boot_ifconfig.sh
+
+# Restart 3proxy
+pkill 3proxy
+sleep 2
 /usr/local/etc/3proxy/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg &>/dev/null &
-echo "$(date) -> IPv6 rotated" >> /var/log/ipv6-rotate.log
+
+echo "$(date) -> IPv6 rotated successfully" >> /var/log/ipv6-rotate.log
 AUTOSCRIPT
 
 chmod +x /root/auto_rotate_ipv6.sh
