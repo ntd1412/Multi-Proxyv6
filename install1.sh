@@ -17,7 +17,6 @@ install_3proxy() {
     cp src/3proxy /usr/local/etc/3proxy/bin/
     cd $WORKDIR
 }
-
 install_3proxy
 
 # -------------------------------
@@ -25,23 +24,22 @@ install_3proxy
 IP4=$(curl -4 -s icanhazip.com)
 IP6_PREFIX=$(curl -6 -s icanhazip.com | cut -f1-4 -d':')  # subnet /64
 FIRST_PORT=21000
-LAST_PORT=$((FIRST_PORT + 1999))  # 2000 proxy
+LAST_PORT=22999   # 2000 port
 DATA_FILE="$WORKDIR/data.txt"
 
 # -------------------------------
-# Tạo file data.txt: port/IPv6
+# Tạo file data.txt: port/IPv4/IPv6
 gen_data() {
-  > $DATA_FILE
-  for port in $(seq $FIRST_PORT $LAST_PORT); do
-      ipv6="$IP6_PREFIX:$(printf '%x%x:%x%x:%x%x:%x%x\n' $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM)"
-      echo "$port/$IP4/$ipv6" >> $DATA_FILE
-  done
+    > $DATA_FILE
+    for port in $(seq $FIRST_PORT $LAST_PORT); do
+        ipv6="$IP6_PREFIX:$(printf '%x%x:%x%x:%x%x:%x%x\n' $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM)"
+        echo "$port/$IP4/$ipv6" >> $DATA_FILE
+    done
 }
-
 gen_data
 
 # -------------------------------
-# Tạo 3proxy.cfg không user/pass
+# Tạo 3proxy.cfg chỉ dùng IPv4 cho client
 PROXY_CFG="/usr/local/etc/3proxy/3proxy.cfg"
 cat > $PROXY_CFG <<EOF
 daemon
@@ -55,20 +53,19 @@ setuid 65535
 flush
 auth none
 
-$(awk -F "/" '{print "proxy -6 -n -a -p"$1" -i"$2" -e"$3}' $DATA_FILE)
+# IPv4 proxy
+$(awk -F "/" '{print "proxy -n -a -p"$1" -i"$2}' $DATA_FILE)
 EOF
 
 # -------------------------------
-# Script thêm IPv6
+# Script thêm IPv6 vào eth0
 BOOT_IFCONFIG="$WORKDIR/boot_ifconfig.sh"
 cat > $BOOT_IFCONFIG <<'EOF'
 #!/bin/bash
 WORKDIR="/home/cloudfly"
 DATA_FILE="$WORKDIR/data.txt"
-# Xóa IPv6 cũ trước khi thêm
-ip -6 addr flush dev eth0
 for ip in $(awk -F "/" '{print $3}' $DATA_FILE); do
-    ip -6 addr add $ip/64 dev eth0
+    ip -6 addr add $ip/64 dev eth0 2>/dev/null || true
 done
 EOF
 chmod +x $BOOT_IFCONFIG
@@ -87,18 +84,17 @@ EOF
 chmod +x $BOOT_IPTABLES
 
 # -------------------------------
-# Chạy proxy lần đầu
+# Chạy proxy
 bash $BOOT_IFCONFIG
 bash $BOOT_IPTABLES
-ulimit -n 2000048
+ulimit -n 1000048
 /usr/local/etc/3proxy/bin/3proxy $PROXY_CFG &
 
 # -------------------------------
-# Xuất danh sách proxy
+# Xuất danh sách proxy IPv4:port
 awk -F "/" '{print "http://"$2":"$1}' $DATA_FILE > $WORKDIR/proxy.txt
-echo "✅ 2000 Proxy created!"
-echo "Sample proxies:"
-head -n 20 $WORKDIR/proxy.txt
+echo "✅ Proxy created!"
+cat $WORKDIR/proxy.txt
 
 # -------------------------------
 # Script xoay IPv6 mỗi phút
@@ -108,27 +104,24 @@ cat > $ROTATE_SCRIPT <<'EOF'
 WORKDIR="/home/cloudfly"
 DATA_FILE="$WORKDIR/data.txt"
 PROXY_CFG="/usr/local/etc/3proxy/3proxy.cfg"
-IP4=$(curl -4 -s icanhazip.com)
+
+IP4=$(awk -F "/" 'NR==1{print $2}' $DATA_FILE)  # giữ IPv4 cố định
 IP6_PREFIX=$(curl -6 -s icanhazip.com | cut -f1-4 -d':')
 
-# Tạo dữ liệu mới
+# Tạo dữ liệu mới với IPv6 mới
 > $DATA_FILE
-FIRST_PORT=21000
-LAST_PORT=$((FIRST_PORT + 1999))
-for port in $(seq $FIRST_PORT $LAST_PORT); do
+for port in $(seq 21000 22999); do
     ipv6="$IP6_PREFIX:$(printf '%x%x:%x%x:%x%x:%x%x\n' $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM)"
     echo "$port/$IP4/$ipv6" >> $DATA_FILE
 done
 
-# Flush IPv6 cũ + thêm IPv6 mới
-ip -6 addr flush dev eth0
+# Thêm IPv6 vào eth0
 for ip in $(awk -F "/" '{print $3}' $DATA_FILE); do
-    ip -6 addr add $ip/64 dev eth0
+    ip -6 addr add $ip/64 dev eth0 2>/dev/null || true
 done
 
 # Reload 3proxy
-pkill -TERM -f 3proxy
-sleep 1
+pkill -f 3proxy
 /usr/local/etc/3proxy/bin/3proxy $PROXY_CFG &>/dev/null &
 echo "$(date) -> IPv6 rotated" >> /var/log/ipv6-rotate.log
 EOF
