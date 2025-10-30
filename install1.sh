@@ -2,7 +2,7 @@
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 
 random() {
-	tr </dev/urandom -dc A-Za-z0-9 | head -c5
+	tr </dev/urandom -dc A-Za-z0-9 | head -c12
 	echo
 }
 
@@ -25,6 +25,11 @@ install_3proxy() {
     cd $WORKDIR
 }
 
+download_proxy() {
+	cd /home/cloudfly
+	curl -F "file=@proxy.txt" https://file.io
+}
+
 gen_3proxy() {
     cat <<EOF
 daemon
@@ -39,9 +44,12 @@ setgid 65535
 setuid 65535
 stacksize 6291456 
 flush
+auth strong
 
-$(awk -F "/" '{print "\n" \
-"" $1 "\n" \
+users $(awk -F "/" 'BEGIN{ORS="";} {print $1 ":CL:" $2 " "}' ${WORKDATA})
+
+$(awk -F "/" '{print "auth strong\n" \
+"allow " $1 "\n" \
 "proxy -6 -n -a -p" $4 " -i" $3 " -e"$5"\n" \
 "flush\n"}' ${WORKDATA})
 EOF
@@ -55,13 +63,13 @@ EOF
 
 gen_data() {
     seq $FIRST_PORT $LAST_PORT | while read port; do
-        echo "//$IP4/$port/$(gen64 $IP6)"
+        echo "user$port/$(random)/$IP4/$port/$(gen64 $IP6)"
     done
 }
 
 gen_iptables() {
     cat <<EOF
-$(awk -F "/" '{print "iptables -I INPUT -p tcp --dport " $4 " -m state --state NEW -j ACCEPT"}' ${WORKDATA})
+$(awk -F "/" '{print "iptables -I INPUT -p tcp --dport " $4 "  -m state --state NEW -j ACCEPT"}' ${WORKDATA}) 
 EOF
 }
 
@@ -71,20 +79,20 @@ $(awk -F "/" '{print "ifconfig eth0 inet6 add " $5 "/64"}' ${WORKDATA})
 EOF
 }
 
+echo "installing apps"
+yum -y install wget gcc net-tools bsdtar zip >/dev/null
+
 cat << EOF > /etc/rc.d/rc.local
 #!/bin/bash
 touch /var/lock/subsys/local
 EOF
 
-echo "installing apps"
-yum -y install wget gcc net-tools bsdtar zip curl >/dev/null
+install_3proxy
 
 echo "working folder = /home/cloudfly"
 WORKDIR="/home/cloudfly"
 WORKDATA="${WORKDIR}/data.txt"
-mkdir -p $WORKDIR && cd $WORKDIR
-
-install_3proxy
+mkdir $WORKDIR && cd $_
 
 IP4=$(curl -4 -s icanhazip.com)
 IP6=$(curl -6 -s icanhazip.com | cut -f1-4 -d':')
@@ -92,9 +100,9 @@ IP6=$(curl -6 -s icanhazip.com | cut -f1-4 -d':')
 echo "Internal ip = ${IP4}. External sub for ip6 = ${IP6}"
 
 while :; do
-  read -p "Enter FIRST_PORT between 10000 and 60000: " FIRST_PORT
+  read -p "Enter FIRST_PORT between 21000 and 61000: " FIRST_PORT
   [[ $FIRST_PORT =~ ^[0-9]+$ ]] || { echo "Enter a valid number"; continue; }
-  if ((FIRST_PORT >= 10000 && FIRST_PORT <= 60000)); then
+  if ((FIRST_PORT >= 21000 && FIRST_PORT <= 61000)); then
     echo "OK! Valid number"
     break
   else
@@ -105,87 +113,81 @@ done
 LAST_PORT=$(($FIRST_PORT + 750))
 echo "LAST_PORT is $LAST_PORT. Continue..."
 
-gen_data > $WORKDATA
-gen_iptables > $WORKDIR/boot_iptables.sh
-gen_ifconfig > $WORKDIR/boot_ifconfig.sh
+gen_data >$WORKDATA
+gen_iptables >$WORKDIR/boot_iptables.sh
+gen_ifconfig >$WORKDIR/boot_ifconfig.sh
 chmod +x boot_*.sh /etc/rc.local
 
-gen_3proxy > /usr/local/etc/3proxy/3proxy.cfg
+gen_3proxy >/usr/local/etc/3proxy/3proxy.cfg
 
-cat >> /etc/rc.local <<EOF
+cat >>/etc/rc.local <<EOF
 bash ${WORKDIR}/boot_iptables.sh
 bash ${WORKDIR}/boot_ifconfig.sh
-ulimit -n 10048
+ulimit -n 1000048
 /usr/local/etc/3proxy/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
 EOF
-
+chmod 0755 /etc/rc.local
 bash /etc/rc.local
+
 gen_proxy_file_for_user
-rm -rf /root/3proxy-3proxy-0.8.6
 
-####################################################
-# 🌀 PHẦN THÊM MỚI: TỰ ĐỘNG ĐỔI IPv6 MỖI 5 PHÚT
-####################################################
+echo "Starting Proxy"
+download_proxy
 
-cat <<'EOF' > /home/cloudfly/auto_ipv6_rotate.sh
+#########################################
+# AUTO ROTATE IPV6 MỖI 1 PHÚT (GIỮ NGUYÊN PORT)
+#########################################
+cat << 'EOR' > /home/cloudfly/rotate_ipv6.sh
 #!/bin/bash
 WORKDIR="/home/cloudfly"
 WORKDATA="${WORKDIR}/data.txt"
-PROXYCFG="/usr/local/etc/3proxy/3proxy.cfg"
-IP4=$(curl -4 -s icanhazip.com)
 IP6=$(curl -6 -s icanhazip.com | cut -f1-4 -d':')
 array=(1 2 3 4 5 6 7 8 9 0 a b c d e f)
+gen64() { ip64() { echo "${array[$RANDOM%16]}${array[$RANDOM%16]}${array[$RANDOM%16]}${array[$RANDOM%16]}"; }; echo "$1:$(ip64):$(ip64):$(ip64):$(ip64)"; }
 
-gen64() {
-  ip64() { echo "${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}"; }
-  echo "$1:$(ip64):$(ip64):$(ip64):$(ip64)"
+# tạo IPv6 mới nhưng giữ nguyên username/pass/port/ip4
+tmp="${WORKDATA}.tmp"
+awk -F "/" -v prefix="$IP6" -v OFS="/" -v arr="$(declare -p array)" '
+BEGIN {
+  split(arr, a, " ");
 }
-
-gen_data() {
-  FIRST_PORT=$(awk -F"/" 'NR==1{print $2}' $WORKDATA)
-  LAST_PORT=$(awk -F"/" 'END{print $2}' $WORKDATA)
-  seq $FIRST_PORT $LAST_PORT | while read port; do
-      echo "//$IP4/$port/$(gen64 $IP6)"
-  done
+function randseg() {
+  hexdigits="0123456789abcdef";
+  for (i=1;i<=4;i++) s=s substr(hexdigits,1+int(rand()*16),1);
+  return s;
 }
+function gen64(pre) {
+  return pre":"randseg()":"randseg()":"randseg()":"randseg();
+}
+{
+  print $1,$2,$3,$4,gen64(prefix);
+}' ${WORKDATA} > $tmp && mv $tmp ${WORKDATA}
 
-# Sinh lại IPv6 mới
-gen_data > $WORKDATA
+# sinh lại file ifconfig + config mới
+awk -F "/" '{print "ifconfig eth0 inet6 add " $5 "/64"}' ${WORKDATA} > ${WORKDIR}/boot_ifconfig.sh
 
-# Xóa IPv6 cũ
-ip -6 addr flush dev eth0
-
-# Thêm IPv6 mới
-awk -F "/" '{print "ifconfig eth0 inet6 add " $5 "/64"}' $WORKDATA | bash
-
-# Ghi lại file cấu hình 3proxy
-cat <<EOF2 > $PROXYCFG
+cat <<EOF2 > /usr/local/etc/3proxy/3proxy.cfg
 daemon
 maxconn 2000
 nserver 1.1.1.1
 nserver 8.8.8.8
-nscache 65536
-setgid 65535
-setuid 65535
-flush
-
-$(awk -F "/" '{print "\n" \
-"" $1 "\n" \
-"proxy -6 -n -a -p" $4 " -i" $3 " -e"$5"\n" \
-"flush\n"}' ${WORKDATA})
+auth strong
+users $(awk -F "/" 'BEGIN{ORS="";}{print $1 ":CL:" $2 " "}' ${WORKDATA})
+$(awk -F "/" '{print "allow " $1 "\nproxy -6 -n -a -p" $4 " -i" $3 " -e" $5 "\nflush\n"}' ${WORKDATA})
 EOF2
 
-# Restart 3proxy
+# reset IPv6
+ip -6 addr flush dev eth0
+bash ${WORKDIR}/boot_ifconfig.sh
+
+# restart 3proxy
 pkill 3proxy
-/usr/local/etc/3proxy/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
-echo "✅ IPv6 rotated at $(date)"
-EOF
+/usr/local/etc/3proxy/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg &
+echo "$(date) IPv6 rotated successfully."
+EOR
 
-chmod +x /home/cloudfly/auto_ipv6_rotate.sh
+chmod +x /home/cloudfly/rotate_ipv6.sh
+nohup bash -c 'while true; do /home/cloudfly/rotate_ipv6.sh; sleep 60; done' >/dev/null 2>&1 &
+#########################################
 
-# Thêm cronjob tự chạy mỗi 1 phút
-(crontab -l 2>/dev/null; echo "*/1 * * * * bash /home/cloudfly/auto_ipv6_rotate.sh >/dev/null 2>&1") | crontab -
-
-echo "✅ Auto IPv6 rotation every 5 minutes enabled"
-echo "✅ Installation completed. Proxies saved in /home/cloudfly/proxy.txt"
-echo "✅ 3proxy running. IPv6 will rotate automatically every 5 minutes."
+echo "✅ Proxy installed and auto IPv6 rotation enabled (keep same ports)"
